@@ -3,12 +3,16 @@ import { StudioState, StudioMode, ToolType } from './types';
 import { PhotoEngine } from './photo/photoEngine';
 import { VectorEngine } from './vector/vectorEngine';
 import { LocalAIEngine } from './ai/aiEngine';
+import { AudioEngine } from './motion/audioEngine';
+import { TimelineController } from './motion/timelineController';
 
 class LuminaStudioApp {
   private state: StudioState;
   private photoEngine: PhotoEngine;
   private vectorEngine: VectorEngine;
   private aiEngine: LocalAIEngine;
+  private audioEngine: AudioEngine;
+  private timelineController: TimelineController;
   
   private canvasElement!: HTMLCanvasElement;
   private canvasCtx!: CanvasRenderingContext2D;
@@ -22,6 +26,7 @@ class LuminaStudioApp {
 
     this.photoEngine = new PhotoEngine(width, height);
     this.aiEngine = new LocalAIEngine();
+    this.audioEngine = new AudioEngine();
 
     const bgLayer = this.photoEngine.createLayer('Background', true);
     const artLayer = this.photoEngine.createLayer('Layer 1', false);
@@ -51,6 +56,18 @@ class LuminaStudioApp {
       isPlaying: false,
       aiConnected: false,
     };
+
+    this.timelineController = new TimelineController(this.state.videoClips, this.audioEngine, 20);
+
+    this.timelineController.setOnTimeUpdate((time) => {
+      this.state.currentTime = time;
+      this.updatePlayheadDOM();
+    });
+
+    this.timelineController.setOnStateChange(() => {
+      this.updatePlayControlsDOM();
+      this.renderTimeline();
+    });
 
     this.initDOM();
     this.vectorEngine = new VectorEngine(this.svgOverlay);
@@ -129,12 +146,30 @@ class LuminaStudioApp {
         <div class="timeline-controls">
           <div style="display: flex; gap: 8px; align-items: center;">
             <button class="btn-pill" id="btn-play">▶ Play</button>
-            <span style="font-family: var(--font-mono); font-size: 12px; color: var(--text-muted);" id="timecode">00:00:00:00</span>
+            <button class="btn-pill" id="btn-stop">⏹ Stop</button>
+            <button class="btn-pill" id="btn-razor" title="Split Clip at Playhead (C)">✂ Razor Cut</button>
+            <span style="font-family: var(--font-mono); font-size: 13px; font-weight: 700; color: var(--accent-cyan); margin-left: 8px;" id="timecode">00:00:00:00</span>
           </div>
-          <span style="font-size: 12px; color: var(--text-muted);">Multi-Track NLE Video Engine</span>
+          <div style="display: flex; gap: 12px; align-items: center;">
+            <span style="font-size: 11px; color: var(--text-muted); font-family: var(--font-mono);">Web Audio Scrub: Active ♫</span>
+            <span style="font-size: 11px; font-weight: 600; color: var(--text-dim);">Multi-Track NLE Engine</span>
+          </div>
         </div>
-        <div class="timeline-tracks" id="timeline-tracks" style="padding: 10px;">
-          <!-- Tracks will render here -->
+        <div class="timeline-workspace">
+          <div class="timeline-track-headers" id="timeline-track-headers">
+            <!-- Track labels: V1, V2, A1, A2 -->
+          </div>
+          <div class="timeline-tracks-area" id="timeline-tracks-area">
+            <div class="timeline-ruler" id="timeline-ruler">
+              <!-- Ruler ticks -->
+            </div>
+            <div id="timeline-lanes-container">
+              <!-- Clip lanes -->
+            </div>
+            <div class="timeline-playhead" id="timeline-playhead" style="left: 0px;">
+              <div class="timeline-playhead-head"></div>
+            </div>
+          </div>
         </div>
       </div>
     `;
@@ -190,6 +225,52 @@ class LuminaStudioApp {
       const enhanced = await this.aiEngine.generatePromptAugmentation(userPrompt);
       alert(`⚡ Prompt Synthesized via Local GPU:\n\n"${enhanced}"\n\nQueuing diffusion tensor pipeline on RTX 5070 Ti...`);
     });
+
+    // Timeline Controls
+    document.getElementById('btn-play')?.addEventListener('click', () => {
+      this.timelineController.togglePlay();
+    });
+
+    document.getElementById('btn-stop')?.addEventListener('click', () => {
+      this.timelineController.pause();
+      this.timelineController.setCurrentTime(0, false);
+      this.updatePlayheadDOM();
+    });
+
+    document.getElementById('btn-razor')?.addEventListener('click', () => {
+      const split = this.timelineController.razorCutAtPlayhead();
+      if (split) {
+        this.renderTimeline();
+      } else {
+        alert('Position the playhead over a clip to perform a razor split.');
+      }
+    });
+
+    // Interactive timeline ruler scrubbing
+    const tracksArea = document.getElementById('timeline-tracks-area');
+    if (tracksArea) {
+      let isScrubbing = false;
+
+      const handleScrub = (e: MouseEvent) => {
+        const rect = tracksArea.getBoundingClientRect();
+        const offsetX = e.clientX - rect.left + tracksArea.scrollLeft;
+        const targetSeconds = Math.max(0, offsetX / 50);
+        this.timelineController.setCurrentTime(targetSeconds, true);
+      };
+
+      tracksArea.addEventListener('mousedown', (e) => {
+        isScrubbing = true;
+        handleScrub(e);
+      });
+
+      window.addEventListener('mousemove', (e) => {
+        if (isScrubbing) handleScrub(e);
+      });
+
+      window.addEventListener('mouseup', () => {
+        isScrubbing = false;
+      });
+    }
   }
 
   private switchMode(mode: StudioMode) {
@@ -337,27 +418,76 @@ class LuminaStudioApp {
     });
   }
 
-  private renderTimeline() {
-    const tracksContainer = document.getElementById('timeline-tracks');
-    if (!tracksContainer) return;
+  private updatePlayheadDOM() {
+    const timecodeEl = document.getElementById('timecode');
+    if (timecodeEl) {
+      timecodeEl.innerText = TimelineController.formatTimecode(this.state.currentTime);
+    }
+    const playhead = document.getElementById('timeline-playhead');
+    if (playhead) {
+      const leftPx = this.state.currentTime * 50; // 50px per second
+      playhead.style.left = `${leftPx}px`;
+    }
+  }
 
-    tracksContainer.innerHTML = `
-      <div style="display: flex; flex-direction: column; gap: 8px;">
-        <div style="display: flex; gap: 8px; align-items: center;">
-          <span style="width: 60px; font-size: 11px; font-weight: 600; color: var(--text-muted);">Video 1</span>
-          <div style="flex: 1; height: 32px; background: #161a22; border-radius: 4px; position: relative; border: 1px solid var(--border-color);">
-            <div style="position: absolute; left: 0%; width: 45%; height: 100%; background: #3b82f6; border-radius: 4px; display: flex; align-items: center; padding: 0 8px; font-size: 11px; color: #fff;">Intro_Scene.mp4</div>
-            <div style="position: absolute; left: 45%; width: 40%; height: 100%; background: #8b5cf6; border-radius: 4px; display: flex; align-items: center; padding: 0 8px; font-size: 11px; color: #fff;">Cut_Two.mp4</div>
-          </div>
-        </div>
-        <div style="display: flex; gap: 8px; align-items: center;">
-          <span style="width: 60px; font-size: 11px; font-weight: 600; color: var(--text-muted);">Audio 1</span>
-          <div style="flex: 1; height: 28px; background: #161a22; border-radius: 4px; position: relative; border: 1px solid var(--border-color);">
-            <div style="position: absolute; left: 0%; width: 85%; height: 100%; background: #10b981; border-radius: 4px; display: flex; align-items: center; padding: 0 8px; font-size: 11px; color: #fff;">Master_Score.wav ♫</div>
-          </div>
-        </div>
+  private updatePlayControlsDOM() {
+    const btnPlay = document.getElementById('btn-play');
+    if (btnPlay) {
+      btnPlay.innerText = this.timelineController.isPlaybackActive() ? '⏸ Pause' : '▶ Play';
+    }
+  }
+
+  private renderTimeline() {
+    const headers = document.getElementById('timeline-track-headers');
+    const lanes = document.getElementById('timeline-lanes-container');
+    const ruler = document.getElementById('timeline-ruler');
+    if (!headers || !lanes || !ruler) return;
+
+    // Render ruler markers (every second for 20s)
+    ruler.innerHTML = '';
+    const totalSecs = this.timelineController.getDuration();
+    for (let s = 0; s <= totalSecs; s += 2) {
+      const tick = document.createElement('div');
+      tick.style.position = 'absolute';
+      tick.style.left = `${s * 50}px`;
+      tick.style.top = '2px';
+      tick.style.fontSize = '10px';
+      tick.style.color = 'var(--text-dim)';
+      tick.style.fontFamily = 'var(--font-mono)';
+      tick.innerText = `${s}s`;
+      ruler.appendChild(tick);
+    }
+
+    // Render track headers
+    const tracks = this.timelineController.getTracks();
+    headers.innerHTML = tracks.map(t => `
+      <div class="timeline-track-header">
+        <span>${t.name}</span>
+        <span style="font-size: 9px; color: ${t.type === 'video' ? 'var(--accent-blue)' : 'var(--accent-emerald)'}; text-transform: uppercase;">${t.type}</span>
       </div>
-    `;
+    `).join('');
+
+    // Render track lanes & clips
+    const clips = this.timelineController.getClips();
+    lanes.innerHTML = tracks.map(t => {
+      const trackClips = clips.filter(c => c.trackId === t.id);
+      return `
+        <div class="timeline-track-lane" data-track-id="${t.id}">
+          ${trackClips.map(c => {
+            const left = c.startTime * 50;
+            const width = c.duration * 50;
+            return `
+              <div class="timeline-clip" style="left: ${left}px; width: ${width}px; background: ${c.color};" data-clip-id="${c.id}">
+                ${c.name}
+              </div>
+            `;
+          }).join('')}
+        </div>
+      `;
+    }).join('');
+
+    this.updatePlayheadDOM();
+    this.updatePlayControlsDOM();
   }
 }
 
