@@ -17,6 +17,20 @@
 
 ---
 
+## 🌟 About Lumina Studio
+
+**Lumina Creative Studio** is a unified, offline-first digital creation suite engineered to liberate digital artists, designers, video editors, and developers from proprietary subscription ecosystems.
+
+Born out of the frustration with predatory cloud-locking pricing models, bloatware, and fragmented open-source alternatives, Lumina merges the core superpowers of **Photoshop**, **Illustrator**, **Premiere Pro**, and **InDesign** into a single, cohesive, modern workstation.
+
+### Our Core Philosophy:
+- **Zero Subscription Hostage**: Your creative tools and projects belong to you forever. No monthly billing, no forced cloud logins, and no paywalled features.
+- **Hardware-Native Autonomy**: Instead of sending your artwork and intellectual property to remote cloud servers for generative AI features, Lumina connects directly to your local workstation's GPU (e.g. NVIDIA RTX) for 100% private, instantaneous offline diffusion, smart inpainting, and vector intelligence.
+- **Single Cohesive Interface**: Eliminate the cognitive load of switching between four different programs with mismatched hotkeys and clunky window managers. In Lumina, moving from raster painting to vector paths to video cutting is a single-click mode transition on the same canvas stage.
+- **Open Standards**: Native support for open vector formats (SVG), standard raster buffers (PNG/WebP/EXR), and web-first codecs without proprietary file format entrapment.
+
+---
+
 ## 💡 Why Lumina Studio?
 
 For decades, digital creatives and engineers have faced an anti-consumer landscape:
