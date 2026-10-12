@@ -34,6 +34,8 @@ export interface VectorShape {
   height?: number;
   radius?: number;
   pathData?: string;
+  text?: string;
+  fontSize?: number;
   fill: string;
   stroke: string;
   strokeWidth: number;

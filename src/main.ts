@@ -1,10 +1,12 @@
 import './styles/app.css';
-import { StudioState, StudioMode, ToolType } from './types';
+import { StudioState, StudioMode, ToolType, VectorShape } from './types';
 import { PhotoEngine } from './photo/photoEngine';
 import { VectorEngine } from './vector/vectorEngine';
 import { LocalAIEngine } from './ai/aiEngine';
 import { AudioEngine } from './motion/audioEngine';
 import { TimelineController } from './motion/timelineController';
+import { BezierPenTool } from './vector/bezierPen';
+import { HistoryManager } from './photo/historyManager';
 
 class LuminaStudioApp {
   private state: StudioState;
@@ -13,6 +15,9 @@ class LuminaStudioApp {
   private aiEngine: LocalAIEngine;
   private audioEngine: AudioEngine;
   private timelineController: TimelineController;
+  private historyManager: HistoryManager;
+  private penTool: BezierPenTool;
+  private activeTab: 'layers' | 'props' | 'filters' = 'layers';
   
   private canvasElement!: HTMLCanvasElement;
   private canvasCtx!: CanvasRenderingContext2D;
@@ -27,6 +32,8 @@ class LuminaStudioApp {
     this.photoEngine = new PhotoEngine(width, height);
     this.aiEngine = new LocalAIEngine();
     this.audioEngine = new AudioEngine();
+    this.historyManager = new HistoryManager();
+    this.penTool = new BezierPenTool();
 
     const bgLayer = this.photoEngine.createLayer('Background', true);
     const artLayer = this.photoEngine.createLayer('Layer 1', false);
@@ -192,10 +199,7 @@ class LuminaStudioApp {
     document.querySelectorAll('.tool-item').forEach(btn => {
       btn.addEventListener('click', (e) => {
         const tool = (e.currentTarget as HTMLElement).dataset.tool as ToolType;
-        if (!tool) return;
-        document.querySelectorAll('.tool-item').forEach(b => b.classList.remove('active'));
-        (e.currentTarget as HTMLElement).classList.add('active');
-        this.state.activeTool = tool;
+        if (tool) this.selectTool(tool);
       });
     });
 
@@ -243,6 +247,63 @@ class LuminaStudioApp {
         this.renderTimeline();
       } else {
         alert('Position the playhead over a clip to perform a razor split.');
+      }
+    });
+
+    // Inspector Panel Tab Switching
+    document.querySelectorAll('.panel-tab').forEach(tabBtn => {
+      tabBtn.addEventListener('click', (e) => {
+        const tab = (e.currentTarget as HTMLElement).dataset.tab as 'layers' | 'props' | 'filters';
+        if (!tab) return;
+        this.activeTab = tab;
+        document.querySelectorAll('.panel-tab').forEach(t => t.classList.remove('active'));
+        (e.currentTarget as HTMLElement).classList.add('active');
+        this.renderPanels();
+      });
+    });
+
+    // Keyboard Shortcuts (Undo, Redo, Tools)
+    window.addEventListener('keydown', (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        const activeLayer = this.getActiveLayer();
+        if (activeLayer) {
+          if (e.shiftKey) {
+            this.historyManager.redo(activeLayer);
+          } else {
+            this.historyManager.undo(activeLayer);
+          }
+          this.renderCanvas();
+        }
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') {
+        e.preventDefault();
+        const activeLayer = this.getActiveLayer();
+        if (activeLayer) {
+          this.historyManager.redo(activeLayer);
+          this.renderCanvas();
+        }
+      } else if (e.key.toLowerCase() === 'b') {
+        this.selectTool('brush');
+      } else if (e.key.toLowerCase() === 'e') {
+        this.selectTool('eraser');
+      } else if (e.key.toLowerCase() === 'p') {
+        this.selectTool('pen');
+      } else if (e.key.toLowerCase() === 'v') {
+        this.selectTool('select');
+      } else if (e.key.toLowerCase() === 'u') {
+        this.selectTool('rectangle');
+      } else if (e.key.toLowerCase() === 't') {
+        this.selectTool('text');
+      } else if (e.key.toLowerCase() === 'i') {
+        this.selectTool('eyedropper');
+      } else if (e.key.toLowerCase() === 'c' && this.state.mode === 'motion') {
+        this.timelineController.razorCutAtPlayhead();
+        this.renderTimeline();
+      } else if (e.key === ' ' && this.state.mode === 'motion') {
+        e.preventDefault();
+        this.timelineController.togglePlay();
       }
     });
 
@@ -302,9 +363,11 @@ class LuminaStudioApp {
       y: e.clientY - rect.top,
     };
 
+    const activeLayer = this.getActiveLayer();
+
     if (this.state.activeTool === 'brush' || this.state.activeTool === 'eraser') {
-      const activeLayer = this.getActiveLayer();
       if (activeLayer) {
+        this.historyManager.saveState(activeLayer);
         this.photoEngine.drawStroke(
           activeLayer.ctx,
           this.lastPos,
@@ -315,16 +378,90 @@ class LuminaStudioApp {
         );
         this.renderCanvas();
       }
+    } else if (this.state.activeTool === 'eyedropper') {
+      if (activeLayer) {
+        const pixel = activeLayer.ctx.getImageData(this.lastPos.x, this.lastPos.y, 1, 1).data;
+        const hex = `#${((1 << 24) + (pixel[0] << 16) + (pixel[1] << 8) + pixel[2]).toString(16).slice(1)}`;
+        this.state.primaryColor = hex;
+        const colorInput = document.getElementById('primary-color') as HTMLInputElement;
+        if (colorInput) colorInput.value = hex;
+      }
+    } else if (this.state.activeTool === 'pen') {
+      if (!this.penTool.getCurrentPath()) {
+        const newPath = this.penTool.startPath(this.lastPos, this.state.primaryColor, 3);
+        const pathShape: VectorShape = {
+          id: newPath.id,
+          type: 'path',
+          x: 0,
+          y: 0,
+          pathData: BezierPenTool.toSVGPathData(newPath),
+          fill: 'transparent',
+          stroke: this.state.primaryColor,
+          strokeWidth: 3
+        };
+        this.state.vectorShapes.push(pathShape);
+      } else {
+        const updated = this.penTool.addNode(this.lastPos);
+        if (updated) {
+          const shape = this.state.vectorShapes.find(s => s.id === updated.id);
+          if (shape) shape.pathData = BezierPenTool.toSVGPathData(updated);
+        }
+      }
+      this.renderVectorOverlay();
+    } else if (this.state.activeTool === 'rectangle') {
+      const rectShape: VectorShape = {
+        id: 'rect_' + Math.random().toString(36).substring(2, 9),
+        type: 'rect',
+        x: this.lastPos.x,
+        y: this.lastPos.y,
+        width: 140,
+        height: 90,
+        fill: this.state.primaryColor,
+        stroke: '#ffffff',
+        strokeWidth: 2
+      };
+      this.state.vectorShapes.push(rectShape);
+      this.renderVectorOverlay();
+    } else if (this.state.activeTool === 'text') {
+      const userText = window.prompt('Enter text to insert onto canvas:', 'Lumina Design');
+      if (userText) {
+        const textShape: VectorShape = {
+          id: 'text_' + Math.random().toString(36).substring(2, 9),
+          type: 'text',
+          x: this.lastPos.x,
+          y: this.lastPos.y,
+          text: userText,
+          fontSize: 32,
+          fill: this.state.primaryColor,
+          stroke: 'none',
+          strokeWidth: 0
+        };
+        this.state.vectorShapes.push(textShape);
+        this.renderVectorOverlay();
+      }
     }
   }
 
   private onMouseMove(e: MouseEvent) {
-    if (!this.isDrawing) return;
     const rect = this.canvasElement.getBoundingClientRect();
     const currentPos = {
       x: e.clientX - rect.left,
       y: e.clientY - rect.top,
     };
+
+    if (this.state.activeTool === 'pen') {
+      this.penTool.dragHandle(currentPos);
+      const curr = this.penTool.getCurrentPath();
+      if (curr) {
+        const shape = this.state.vectorShapes.find(s => s.id === curr.id);
+        if (shape) {
+          shape.pathData = BezierPenTool.toSVGPathData(curr);
+          this.renderVectorOverlay();
+        }
+      }
+    }
+
+    if (!this.isDrawing) return;
 
     if (this.state.activeTool === 'brush' || this.state.activeTool === 'eraser') {
       const activeLayer = this.getActiveLayer();
@@ -346,6 +483,9 @@ class LuminaStudioApp {
 
   private onMouseUp() {
     this.isDrawing = false;
+    if (this.state.activeTool === 'pen') {
+      this.penTool.finishCurrentNode();
+    }
   }
 
   private getActiveLayer() {
@@ -372,50 +512,111 @@ class LuminaStudioApp {
     }
   }
 
+  private selectTool(tool: ToolType) {
+    this.state.activeTool = tool;
+    document.querySelectorAll('.tool-item').forEach(b => {
+      b.classList.remove('active');
+      if ((b as HTMLElement).dataset.tool === tool) b.classList.add('active');
+    });
+  }
+
   private renderPanels() {
     const panel = document.getElementById('panel-content')!;
-    panel.innerHTML = `
-      <div style="font-weight: 700; font-size: 12px; margin-bottom: 6px; text-transform: uppercase; color: var(--text-muted);">Layers Stack</div>
-      <div class="layer-list">
-        ${this.state.layers.map(layer => `
-          <div class="layer-item ${layer.id === this.state.activeLayerId ? 'active' : ''}" data-layer-id="${layer.id}">
-            <div class="layer-thumb">🖼</div>
-            <span class="layer-name">${layer.name}</span>
-            <span style="font-size: 11px; color: var(--text-dim);">${Math.round(layer.opacity * 100)}%</span>
-          </div>
-        `).reverse().join('')}
-      </div>
 
-      <div style="margin-top: 14px; font-weight: 700; font-size: 12px; margin-bottom: 6px; text-transform: uppercase; color: var(--text-muted);">Layer Filters</div>
-      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px;">
-        <button class="btn-pill" id="filter-bright">☀️ Brightness</button>
-        <button class="btn-pill" id="filter-invert">🔄 Invert</button>
-        <button class="btn-pill" id="filter-gray">⬛ Grayscale</button>
-      </div>
-    `;
+    if (this.activeTab === 'layers') {
+      panel.innerHTML = `
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+          <span style="font-weight: 700; font-size: 11px; text-transform: uppercase; color: var(--text-muted);">Layers Stack</span>
+          <button class="btn-pill" id="btn-add-layer" style="padding: 2px 8px; font-size: 11px;">+ New Layer</button>
+        </div>
+        <div class="layer-list">
+          ${this.state.layers.map(layer => `
+            <div class="layer-item ${layer.id === this.state.activeLayerId ? 'active' : ''}" data-layer-id="${layer.id}">
+              <div class="layer-thumb">🖼</div>
+              <span class="layer-name">${layer.name}</span>
+              <span style="font-size: 11px; color: var(--text-dim);">${Math.round(layer.opacity * 100)}%</span>
+            </div>
+          `).reverse().join('')}
+        </div>
+      `;
 
-    document.querySelectorAll('.layer-item').forEach(item => {
-      item.addEventListener('click', (e) => {
-        const id = (e.currentTarget as HTMLElement).dataset.layerId;
-        if (id) {
-          this.state.activeLayerId = id;
-          this.renderPanels();
+      document.getElementById('btn-add-layer')?.addEventListener('click', () => {
+        const newLayer = this.photoEngine.createLayer(`Layer ${this.state.layers.length + 1}`);
+        this.state.layers.push(newLayer);
+        this.state.activeLayerId = newLayer.id;
+        this.render();
+      });
+
+      document.querySelectorAll('.layer-item').forEach(item => {
+        item.addEventListener('click', (e) => {
+          const id = (e.currentTarget as HTMLElement).dataset.layerId;
+          if (id) {
+            this.state.activeLayerId = id;
+            this.renderPanels();
+          }
+        });
+      });
+    } else if (this.activeTab === 'props') {
+      const activeLayer = this.getActiveLayer();
+      panel.innerHTML = `
+        <div style="font-weight: 700; font-size: 11px; margin-bottom: 12px; text-transform: uppercase; color: var(--text-muted);">Canvas & Tool Properties</div>
+        <div class="prop-group" style="margin-bottom: 12px;">
+          <div class="prop-label">Brush Size: <span id="brush-size-val">${this.state.brushSize}px</span></div>
+          <input type="range" min="1" max="100" value="${this.state.brushSize}" class="prop-slider" id="slider-brush-size">
+        </div>
+        <div class="prop-group" style="margin-bottom: 12px;">
+          <div class="prop-label">Layer Opacity: <span id="layer-opacity-val">${activeLayer ? Math.round(activeLayer.opacity * 100) : 100}%</span></div>
+          <input type="range" min="0" max="100" value="${activeLayer ? Math.round(activeLayer.opacity * 100) : 100}" class="prop-slider" id="slider-layer-opacity">
+        </div>
+        <div class="prop-group">
+          <div class="prop-label">Active Mode: <strong style="color: var(--accent-cyan);">${this.state.mode.toUpperCase()}</strong></div>
+          <div class="prop-label" style="margin-top: 4px;">Canvas: ${this.state.canvasSize.width} x ${this.state.canvasSize.height} px</div>
+        </div>
+      `;
+
+      document.getElementById('slider-brush-size')?.addEventListener('input', (e) => {
+        this.state.brushSize = parseInt((e.target as HTMLInputElement).value, 10);
+        const valEl = document.getElementById('brush-size-val');
+        if (valEl) valEl.innerText = `${this.state.brushSize}px`;
+      });
+
+      document.getElementById('slider-layer-opacity')?.addEventListener('input', (e) => {
+        const val = parseInt((e.target as HTMLInputElement).value, 10) / 100;
+        if (activeLayer) {
+          activeLayer.opacity = val;
+          this.renderCanvas();
+          const valEl = document.getElementById('layer-opacity-val');
+          if (valEl) valEl.innerText = `${Math.round(val * 100)}%`;
         }
       });
-    });
+    } else if (this.activeTab === 'filters') {
+      panel.innerHTML = `
+        <div style="font-weight: 700; font-size: 11px; margin-bottom: 10px; text-transform: uppercase; color: var(--text-muted);">Non-Destructive Adjustments</div>
+        <div style="display: flex; flex-direction: column; gap: 8px;">
+          <button class="btn-pill" id="filter-bright">☀️ Enhance Brightness (+30)</button>
+          <button class="btn-pill" id="filter-invert">🔄 Invert RGB Channels</button>
+          <button class="btn-pill" id="filter-gray">⬛ High-Contrast Grayscale</button>
+          <button class="btn-pill" id="filter-undo" style="margin-top: 10px; border-color: var(--accent-blue);">↩ Undo Action (Ctrl+Z)</button>
+        </div>
+      `;
 
-    document.getElementById('filter-bright')?.addEventListener('click', () => {
-      const l = this.getActiveLayer();
-      if (l) { this.photoEngine.applyAdjustment(l, 'brightness'); this.renderCanvas(); }
-    });
-    document.getElementById('filter-invert')?.addEventListener('click', () => {
-      const l = this.getActiveLayer();
-      if (l) { this.photoEngine.applyAdjustment(l, 'invert'); this.renderCanvas(); }
-    });
-    document.getElementById('filter-gray')?.addEventListener('click', () => {
-      const l = this.getActiveLayer();
-      if (l) { this.photoEngine.applyAdjustment(l, 'grayscale'); this.renderCanvas(); }
-    });
+      document.getElementById('filter-bright')?.addEventListener('click', () => {
+        const l = this.getActiveLayer();
+        if (l) { this.historyManager.saveState(l); this.photoEngine.applyAdjustment(l, 'brightness'); this.renderCanvas(); }
+      });
+      document.getElementById('filter-invert')?.addEventListener('click', () => {
+        const l = this.getActiveLayer();
+        if (l) { this.historyManager.saveState(l); this.photoEngine.applyAdjustment(l, 'invert'); this.renderCanvas(); }
+      });
+      document.getElementById('filter-gray')?.addEventListener('click', () => {
+        const l = this.getActiveLayer();
+        if (l) { this.historyManager.saveState(l); this.photoEngine.applyAdjustment(l, 'grayscale'); this.renderCanvas(); }
+      });
+      document.getElementById('filter-undo')?.addEventListener('click', () => {
+        const l = this.getActiveLayer();
+        if (l) { this.historyManager.undo(l); this.renderCanvas(); }
+      });
+    }
   }
 
   private updatePlayheadDOM() {

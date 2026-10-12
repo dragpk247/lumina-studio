@@ -41,6 +41,16 @@ export class VectorEngine {
         path.setAttribute('stroke-linecap', 'round');
         path.setAttribute('stroke-linejoin', 'round');
         el = path;
+      } else if (shape.type === 'text') {
+        const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        text.setAttribute('x', shape.x.toString());
+        text.setAttribute('y', shape.y.toString());
+        text.setAttribute('fill', shape.fill);
+        text.setAttribute('font-size', (shape.fontSize || 24).toString());
+        text.setAttribute('font-family', 'Inter, sans-serif');
+        text.setAttribute('font-weight', '600');
+        text.textContent = shape.text || 'Sample Text';
+        el = text;
       }
 
       if (el) {
