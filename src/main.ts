@@ -22,7 +22,11 @@ class LuminaStudioApp {
   private canvasElement!: HTMLCanvasElement;
   private canvasCtx!: CanvasRenderingContext2D;
   private svgOverlay!: SVGSVGElement;
+  private viewportElement!: HTMLElement;
   private isDrawing: boolean = false;
+  private isPanning: boolean = false;
+  private isSpaceDown: boolean = false;
+  private startPanPos: { x: number; y: number } = { x: 0, y: 0 };
   private lastPos: { x: number; y: number } = { x: 0, y: 0 };
 
   constructor() {
@@ -184,6 +188,14 @@ class LuminaStudioApp {
     this.canvasElement = document.getElementById('main-canvas') as HTMLCanvasElement;
     this.canvasCtx = this.canvasElement.getContext('2d')!;
     this.svgOverlay = document.getElementById('vector-overlay') as unknown as SVGSVGElement;
+    this.viewportElement = document.querySelector('.canvas-viewport') as HTMLElement;
+    this.updateViewportTransform();
+  }
+
+  private updateViewportTransform() {
+    if (!this.viewportElement) return;
+    this.viewportElement.style.transform = `translate(${this.state.pan.x}px, ${this.state.pan.y}px) scale(${this.state.zoom})`;
+    this.viewportElement.style.transformOrigin = 'center center';
   }
 
   private bindEvents() {
@@ -307,7 +319,58 @@ class LuminaStudioApp {
       }
     });
 
-    // Interactive timeline ruler scrubbing
+    // Spacebar Panning & Dragging
+    window.addEventListener('keydown', (e: KeyboardEvent) => {
+      if (e.code === 'Space' && !(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement)) {
+        if (this.state.mode !== 'motion') {
+          e.preventDefault();
+          this.isSpaceDown = true;
+          document.body.style.cursor = 'grab';
+        }
+      }
+    });
+
+    window.addEventListener('keyup', (e: KeyboardEvent) => {
+      if (e.code === 'Space') {
+        this.isSpaceDown = false;
+        this.isPanning = false;
+        document.body.style.cursor = 'default';
+      }
+    });
+
+    // Mouse Wheel Zoom
+    const stage = document.querySelector('.canvas-stage') as HTMLElement;
+    if (stage) {
+      stage.addEventListener('wheel', (e: WheelEvent) => {
+        e.preventDefault();
+        const zoomDelta = e.deltaY < 0 ? 1.1 : 0.9;
+        this.state.zoom = Math.max(0.1, Math.min(10.0, this.state.zoom * zoomDelta));
+        this.updateViewportTransform();
+      }, { passive: false });
+    }
+
+    // Drag-and-Drop Image Import onto Canvas
+    window.addEventListener('dragover', (e: DragEvent) => e.preventDefault());
+    window.addEventListener('drop', (e: DragEvent) => {
+      e.preventDefault();
+      if (!e.dataTransfer || !e.dataTransfer.files || e.dataTransfer.files.length === 0) return;
+      const file = e.dataTransfer.files[0];
+      if (!file.type.startsWith('image/')) return;
+
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const img = new Image();
+        img.onload = () => {
+          const newLayer = this.photoEngine.createLayer(file.name.substring(0, 18));
+          newLayer.ctx.drawImage(img, 0, 0, this.state.canvasSize.width, this.state.canvasSize.height);
+          this.state.layers.push(newLayer);
+          this.state.activeLayerId = newLayer.id;
+          this.render();
+        };
+        img.src = event.target?.result as string;
+      };
+      reader.readAsDataURL(file);
+    });
     const tracksArea = document.getElementById('timeline-tracks-area');
     if (tracksArea) {
       let isScrubbing = false;
@@ -356,11 +419,18 @@ class LuminaStudioApp {
   }
 
   private onMouseDown(e: MouseEvent) {
+    if (this.isSpaceDown) {
+      this.isPanning = true;
+      this.startPanPos = { x: e.clientX - this.state.pan.x, y: e.clientY - this.state.pan.y };
+      document.body.style.cursor = 'grabbing';
+      return;
+    }
+
     const rect = this.canvasElement.getBoundingClientRect();
     this.isDrawing = true;
     this.lastPos = {
-      x: e.clientX - rect.left,
-      y: e.clientY - rect.top,
+      x: (e.clientX - rect.left) * (this.state.canvasSize.width / rect.width),
+      y: (e.clientY - rect.top) * (this.state.canvasSize.height / rect.height),
     };
 
     const activeLayer = this.getActiveLayer();
@@ -380,7 +450,7 @@ class LuminaStudioApp {
       }
     } else if (this.state.activeTool === 'eyedropper') {
       if (activeLayer) {
-        const pixel = activeLayer.ctx.getImageData(this.lastPos.x, this.lastPos.y, 1, 1).data;
+        const pixel = activeLayer.ctx.getImageData(Math.floor(this.lastPos.x), Math.floor(this.lastPos.y), 1, 1).data;
         const hex = `#${((1 << 24) + (pixel[0] << 16) + (pixel[1] << 8) + pixel[2]).toString(16).slice(1)}`;
         this.state.primaryColor = hex;
         const colorInput = document.getElementById('primary-color') as HTMLInputElement;
@@ -443,10 +513,17 @@ class LuminaStudioApp {
   }
 
   private onMouseMove(e: MouseEvent) {
+    if (this.isPanning) {
+      this.state.pan.x = e.clientX - this.startPanPos.x;
+      this.state.pan.y = e.clientY - this.startPanPos.y;
+      this.updateViewportTransform();
+      return;
+    }
+
     const rect = this.canvasElement.getBoundingClientRect();
     const currentPos = {
-      x: e.clientX - rect.left,
-      y: e.clientY - rect.top,
+      x: (e.clientX - rect.left) * (this.state.canvasSize.width / rect.width),
+      y: (e.clientY - rect.top) * (this.state.canvasSize.height / rect.height),
     };
 
     if (this.state.activeTool === 'pen') {
@@ -482,6 +559,10 @@ class LuminaStudioApp {
   }
 
   private onMouseUp() {
+    if (this.isPanning) {
+      this.isPanning = false;
+      document.body.style.cursor = this.isSpaceDown ? 'grab' : 'default';
+    }
     this.isDrawing = false;
     if (this.state.activeTool === 'pen') {
       this.penTool.finishCurrentNode();
